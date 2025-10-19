@@ -1,0 +1,580 @@
+                    МІНІСТЕРСТВО ОСВІТИ І НАУКИ УКРАЇНИ
+   ХАРКІВСЬКИЙ НАЦІОНАЛЬНИЙ УНІВЕРСИТЕТ РАДІОЕЛЕКТРОНІКИ
+
+
+
+                           Кафедра Програмної інженерії
+
+
+
+
+                                        Звіт
+                                з практичної роботи
+                     з дисципліни: «Аналіз та рефакторинг коду»
+           з теми: «Методи рефакторингу коду програмного забезпечення»
+
+
+
+
+Виконав:                                                              Перевірив:
+ст. гр. ПЗПІ-23-5                                         cт. викладач кафедри ПІ
+Савєльєв К. С.                                                     Сокорчук І. П.
+
+
+
+
+                                   Харків – 2025
+                                                         2
+                      1 ІСТОРІЯ ЗМІН
+
+№ Дата         Версія звіту    Опис змін та виправлень
+1 12.10.2025   1.0             Початкова версія
+                                                                             3
+                                2 ЗАВДАННЯ
+
+     Обрати три методи рефакторингу коду із книги Мартіна Фаулера «Refactoring.
+Improving the Design of Existing Code». Навести приклади свого особистого коду
+(з курсових, лабораторних або інших проєктів), який потребує покращення, та
+продемонструвати застосування обраних методів.
+     Кожен метод рефакторингу повинен супроводжуватись:
+      –   Описом проблеми, яку вирішує даний метод;
+      –   Кодом до і після застосування методу рефакторингу;
+      –   Поясненням переваг використаного методу.
+                                                                                     4
+                            3 ОПИС ВИКОНАНОЇ РОБОТИ
+     3.1 Обрані методи рефакторинґу
+
+     Для виконання завдання були обрані наступні методи рефакторингу:
+      –       «Replace Type Code with State/Strategy»;
+      –       «Replace Nested Conditional with Guard Clauses»;
+      –       «Encapsulate Collection».
+
+     3.2 Опис методів рефакторинґу
+     3.2.1 Метод «Replace Type Code with State/Strategy»
+
+     Проблема, котру вирішує метод: заміна умовної логіки, що базується на
+типі, на стратегію, яка дозволяє більш гнучко обробляти різні стани.
+     Код до рефакторингу:
+
+     class CitiesRepository {
+       async findMany(query: BaseModelQuery): Promise<City[]> {
+         const { order, sortBy } = query
+
+              const expressions: SQL[] = []
+
+              if (sortBy && order) {
+                const expression =
+                  order === 'asc' ? asc(cities[sortBy]) : desc(cities[sortBy])
+
+                  expressions.push(expression)
+              }
+
+              return this.db
+                .select()
+                .from(cities)
+                .orderBy(...expressions)
+          }
+     }
+
+
+     Пояснення методу: замість зберігання умовної логіки для сортування у
+методі    findMany,    ми створюємо окремий обʼєкт       sortStrategies,   який містить
+функції для кожного типу сортування. Це дозволяє легко додавати нові стратегії
+сортування без необхідності змінювати основний метод.
+     Код після рефакторингу:
+
+     // utils.ts
+     type Order = 'asc' | 'desc'
+
+     type SortBuilder<TTable extends Record<string, unknown>> = (
+                                                                                5
+       table: TTable,
+       column: keyof TTable,
+     ) => SQL
+
+     const sortStrategies: Record<Order, SortBuilder<unknown>> = {
+       asc: (table, column) => asc(table[column]),
+       desc: (table, column) => desc(table[column]),
+     }
+
+     // CityRepository.ts
+     class CitiesRepository {
+       async findMany(query: BaseModelQuery): Promise<City[]> {
+         const { order, sortBy } = query
+
+             const expressions: SQL[] = []
+
+             if (sortBy && order) {
+               expressions.push(sortStrategies[order](cities, sortBy))
+             }
+
+             return this.db
+               .select()
+               .from(cities)
+               .orderBy(...expressions)
+         }
+     }
+
+
+     Переваги отриманого коду, після застосування методу: після проведення
+рефакторингу код став більш гнучким та розширюваним. Більше немає необхідності
+реалізації стратегії сортування у кожному методі, а додавання нових стратегій
+сортування тепер вимагає лише додавання нової функції в обʼєкт     sortStrategies.
+
+Це покращує підтримуваність коду та зменшує ризик помилок при внесенні змін.
+
+     3.2.2 Метод «Replace Nested Conditional with Guard Clauses»
+
+     Проблема, котру вирішує метод: надмірна вкладеність умовних операторів
+ускладнює читання та розуміння коду.
+     Код до рефакторингу:
+
+     export const getCompanyLatestJobsCount = async (
+       request: FastifyRequest<{ Params: GET_BY_ID_SCHEMA_TYPE }>,
+       reply: FastifyReply,
+     ): Promise<void> => {
+       const { id } = request.params
+       const { companyRepository, jobRepository } = request.diScope.cradle
+
+         const isExist = await companyRepository.findOne(id)
+
+         let status
+         let body
+
+         if (!isExist.success) {
+                                                                               6
+           status = isExist.error.status
+           body = { message: isExist.error.message }
+         } else {
+           const count = await jobRepository.findLatestCount(id)
+
+             status = 200
+             body = count
+         }
+
+         return reply.status(status).send(body)
+     }
+
+
+     Пояснення        методу:   замість   вкладених   умовних   операторів,   ми
+використовуємо guard-блоки для раннього виходу з функції у випадку невиконання
+умови. Це дозволяє зменшити рівень вкладеності та покращити читабельність коду.
+     Код після рефакторингу:
+
+     export const getCompanyLatestJobsCount = async (
+       request: FastifyRequest<{ Params: GET_BY_ID_SCHEMA_TYPE }>,
+       reply: FastifyReply,
+     ): Promise<void> => {
+       const { id } = request.params
+       const { companyRepository, jobRepository } = request.diScope.cradle
+
+         const isExist = await companyRepository.findOne(id)
+
+         if (!isExist.success) {
+           const { status, message } = isExist.error
+
+             return reply.status(status).send({ message })
+         }
+
+         const count = await jobRepository.findLatestCount(id)
+
+         return reply.status(200).send(count)
+     }
+
+
+     Переваги отриманого коду, після застосування методу: використання
+guard-блоків дозволяє зменшити рівень вкладеності коду, що покращує його
+читабельність та підтримуваність. Логіка функції стає більш лінійною, що полегшує
+розуміння її поведінки.
+
+     3.2.3 Метод «Encapsulate Collection»
+
+     Проблема, котру вирішує метод: без інкапсуляції колекції неможливо
+контролювати її використання, що може призвести до порушення цілісності даних.
+     Код до рефакторингу:
+                                                                            7
+     class JobsRepository {
+       async findMany({ query }: FindByArgs): Promise<Job[]> {
+         const { employmentTypes } = query
+         const expressions: SQL[] = []
+
+             if (employmentTypes.includes('full-time')) {
+               expressions.push(eq(jobs.isFulltime, true))
+             }
+
+             if (employmentTypes.includes('part-time')) {
+               expressions.push(eq(jobs.isFulltime, false))
+             }
+
+             return this.db
+               .select()
+               .from(jobs)
+               .where(...expressions)
+         }
+     }
+
+
+     Пояснення методу: замість того, аби віддати, або ж, у нашому випадку,
+ініціалізувати колекцію й нехай програміст робить що хоче, ми повертаємо лише
+для читання і надаємо чіткі методи для роботи з нею, де можна робити перевірки
+інваріантів тощо.
+     Код після рефакторингу:
+
+     // utils.ts
+     class SqlExpressions {
+       private expressions: SQL[] = []
+
+         add(expression: SQL): void {
+           this.expressions.push(expression)
+         }
+
+         toArray(): SQL[] {
+           return this.expressions
+         }
+     }
+
+     // JobsRepository.ts
+     class JobsRepository {
+       async findMany({ query }: FindByArgs): Promise<Job[]> {
+         const { employmentTypes } = query
+         const expressions = new SqlExpressions()
+
+             if (employmentTypes.includes('full-time')) {
+               expressions.add(eq(jobs.isFulltime, true))
+             }
+
+             if (employmentTypes.includes('part-time')) {
+               expressions.add(eq(jobs.isFulltime, false))
+             }
+
+             return this.db
+               .select()
+                                                                           8
+             .from(jobs)
+             .where(...expressions.toArray())
+         }
+     }
+
+
+     Переваги отриманого коду, після застосування методу: інкапсуляція
+колекції дозволяє краще контролювати її використання, забезпечуючи цілісність
+даних та зменшуючи ризик помилок. Це також покращує читабельність коду,
+оскільки логіка роботи з колекцією тепер знаходиться в одному місці.
+                                                                             9
+                                4 ВИСНОВКИ
+
+     Під час виконання роботи було розглянуто три методи рефакторингу: Replace
+Type Code with State/Strategy, Replace Nested Conditional with Guard Clauses та
+Encapsulate Collection. Ці принципи дозволяють зробити код більш зрозумілим,
+логічним і зручним для подальшої підтримки.
+                                                                                10
+                      5 ВИКОРИСТАНІ ДЖЕРЕЛА
+
+1.   Replace   Type    Code   with   State/Strategy.   Refactoring   and     Design
+     Patterns. URL: https://refactoring.guru/replace-type-code-with-state-strategy
+     (дата звернення: 12.10.2025);
+2.   Replace Nested Conditional with Guard Clauses. Refactoring and
+     Design Patterns. URL: https://refactoring.guru/replace-nested-conditional-
+     with-guard-clauses (дата звернення: 12.10.2025);
+3.   Encapsulate Collection. Refactoring and Design Patterns. URL: https://
+     refactoring.guru/encapsulate-collection (дата звернення: 12.10.2025).
+                                                                          11
+                             ДОДАТОК А
+Посилання на відеозапис доповіді та текст хронологічного опису доповіді
+
+ https://youtu.be/WjHvgC7cnq0
+
+ Хронологічний опис відеозапису:
+ 00:00 - Представлення
+ 00:13 - Огляд методів, що будуть розлянуті
+ 01:31 - Метод Replace Type Code with State/Strategy
+ 04:05 - Метод Replace Nested Condition with Guard Clause
+ 06:30 - Метод Encapsulate Collection
+ 10:11 - Висновки
+                                           12
+             ДОДАТОК Б
+      Слайди презентації доповіді
+
+
+
+
+      Рисунок Б.1 – Вступний слайд
+
+
+
+
+Рисунок Б.2 – Обрані методи рефакторингу
+                                                                            13
+
+
+
+
+       Рисунок Б.3 – Метод «Replace Type Code with State/Strategy»
+
+
+
+
+Рисунок Б.4 – Пояснення методу «Replace Type Code with State/Strategy» та
+                      проблема, котру він вирішує
+                                                                          14
+
+
+
+
+                Рисунок Б.5 – Приклад коду до рефакторингу
+
+
+
+
+Рисунок Б.6 – Прокрокова інструкція рефакторингу коду методом «Replace Type
+                          Code with State/Strategy»
+                                                                      15
+
+
+
+
+          Рисунок Б.7 – Приклад коду після рефакторингу
+
+
+
+
+Рисунок Б.8 – Метод «Replace Nested Conditional with Guard Clauses»
+                                                                              16
+
+
+
+
+Рисунок Б.9 – Пояснення методу «Replace Nested Conditional with Guard Clauses» та
+                          проблема, котру він вирішує
+
+
+
+
+                 Рисунок Б.10 – Приклад коду до рефакторингу
+                                                                           17
+
+
+
+
+Рисунок Б.11 – Прокрокова інструкція рефакторингу коду методом «Replace Nested
+                        Conditional with Guard Clauses»
+
+
+
+
+               Рисунок Б.12 – Приклад коду після рефакторингу
+                                                                             18
+
+
+
+
+                Рисунок Б.13 – Метод «Encapsulate Collection»
+
+
+
+
+Рисунок Б.14 – Пояснення методу «Encapsulate Collection» та проблема, котру він
+                                   вирішує
+                                                                          19
+
+
+
+
+               Рисунок Б.15 – Приклад коду до рефакторингу
+
+
+
+
+Рисунок Б.16 – Прокрокова інструкція рефакторингу коду методом «Encapsulate
+                                Collection»
+                                                 20
+
+
+
+
+Рисунок Б.17 – Приклад коду після рефакторингу
+
+
+
+
+           Рисунок Б.18 – Висновки
+                                     21
+
+
+
+
+Рисунок Б.19 – Використані джерела
+                                                                             22
+                                     ДОДАТОК В
+                               Приклади програмного коду
+
+     Метод «Replace Nested Conditional with Guard Clauses». Код до рефакторингу:
+
+     class CitiesRepository {
+       async findMany(query: BaseModelQuery): Promise<City[]> {
+         const { order, sortBy } = query
+
+             const expressions: SQL[] = []
+
+             if (sortBy && order) {
+               const expression =
+                 order === 'asc' ? asc(cities[sortBy]) : desc(cities[sortBy])
+
+                 expressions.push(expression)
+             }
+
+             return this.db
+               .select()
+               .from(cities)
+               .orderBy(...expressions)
+         }
+     }
+
+
+     Метод «Replace Nested Conditional with Guard Clauses». Код після
+рефакторингу:
+
+     // utils.ts
+     type Order = 'asc' | 'desc'
+
+     type SortBuilder<TTable extends Record<string, unknown>> = (
+       table: TTable,
+       column: keyof TTable,
+     ) => SQL
+
+     const sortStrategies: Record<Order, SortBuilder<unknown>> = {
+       asc: (table, column) => asc(table[column]),
+       desc: (table, column) => desc(table[column]),
+     }
+
+     // CityRepository.ts
+     class CitiesRepository {
+       async findMany(query: BaseModelQuery): Promise<City[]> {
+         const { order, sortBy } = query
+
+             const expressions: SQL[] = []
+
+             if (sortBy && order) {
+               expressions.push(sortStrategies[order](cities, sortBy))
+             }
+
+             return this.db
+               .select()
+               .from(cities)
+                                                                             23
+              .orderBy(...expressions)
+         }
+     }
+
+
+     Метод «Replace Nested Conditional with Guard Clauses». Код до рефакторингу:
+
+     export const getCompanyLatestJobsCount = async (
+       request: FastifyRequest<{ Params: GET_BY_ID_SCHEMA_TYPE }>,
+       reply: FastifyReply,
+     ): Promise<void> => {
+       const { id } = request.params
+       const { companyRepository, jobRepository } = request.diScope.cradle
+
+         const isExist = await companyRepository.findOne(id)
+
+         let status
+         let body
+
+         if (!isExist.success) {
+           status = isExist.error.status
+           body = { message: isExist.error.message }
+         } else {
+           const count = await jobRepository.findLatestCount(id)
+
+             status = 200
+             body = count
+         }
+
+         return reply.status(status).send(body)
+     }
+
+
+     Метод «Replace Nested Conditional with Guard Clauses». Код після
+рефакторингу:
+
+     export const getCompanyLatestJobsCount = async (
+       request: FastifyRequest<{ Params: GET_BY_ID_SCHEMA_TYPE }>,
+       reply: FastifyReply,
+     ): Promise<void> => {
+       const { id } = request.params
+       const { companyRepository, jobRepository } = request.diScope.cradle
+
+         const isExist = await companyRepository.findOne(id)
+
+         if (!isExist.success) {
+           const { status, message } = isExist.error
+
+             return reply.status(status).send({ message })
+         }
+
+         const count = await jobRepository.findLatestCount(id)
+
+         return reply.status(200).send(count)
+     }
+
+
+     Метод «Encapsulate Collection». Код до рефакторингу:
+                                                            24
+class JobsRepository {
+  async findMany({ query }: FindByArgs): Promise<Job[]> {
+    const { employmentTypes } = query
+    const expressions: SQL[] = []
+
+        if (employmentTypes.includes('full-time')) {
+          expressions.push(eq(jobs.isFulltime, true))
+        }
+
+        if (employmentTypes.includes('part-time')) {
+          expressions.push(eq(jobs.isFulltime, false))
+        }
+
+        return this.db
+          .select()
+          .from(jobs)
+          .where(...expressions)
+    }
+}
+
+
+Метод «Encapsulate Collection». Код після рефакторингу:
+
+// utils.ts
+class SqlExpressions {
+  private expressions: SQL[] = []
+
+    add(expression: SQL): void {
+      this.expressions.push(expression)
+    }
+
+    toArray(): SQL[] {
+      return this.expressions
+    }
+}
+
+// JobsRepository.ts
+class JobsRepository {
+  async findMany({ query }: FindByArgs): Promise<Job[]> {
+    const { employmentTypes } = query
+    const expressions = new SqlExpressions()
+
+        if (employmentTypes.includes('full-time')) {
+          expressions.add(eq(jobs.isFulltime, true))
+        }
+
+        if (employmentTypes.includes('part-time')) {
+          expressions.add(eq(jobs.isFulltime, false))
+        }
+
+        return this.db
+          .select()
+          .from(jobs)
+          .where(...expressions.toArray())
+    }
+}
+
