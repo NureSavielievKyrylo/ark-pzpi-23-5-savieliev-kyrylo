@@ -1,0 +1,113 @@
+networks:
+  dev:
+    driver: bridge
+
+services:
+  db:
+    container_name: inkly-db
+    image: "postgres:18"
+    restart: always
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dev
+    ports:
+      - "5432:5432"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  db-gateway:
+    container_name: inkly-db-gateway
+    image: "ghcr.io/drizzle-team/gateway:latest"
+    restart: always
+    volumes:
+      - db-gateway:/app
+    networks:
+      - dev
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4983:4983"
+  redis:
+    container_name: inkly-redis
+    image: "redis:8"
+    restart: always
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD}"
+      - "--user"
+      - "${REDIS_USER}"
+      - "on"
+      - ">${REDIS_PASSWORD}"
+      - "~*"
+      - "+@all"
+    ulimits:
+      memlock: -1
+    volumes:
+      - redisdata:/data
+    networks:
+      - dev
+    environment:
+      - REDIS_USER=${REDIS_USER}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  api:
+    container_name: inkly-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "${PORT}:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=${PORT}
+      - POSTGRES_HOST=db
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PORT=5432
+      - COOKIE_SECRET=${COOKIE_SECRET}
+      - REDIS_HOST=redis
+      - REDIS_USER=default
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_PORT=6379
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+  redisdata:
+  db-gateway:
