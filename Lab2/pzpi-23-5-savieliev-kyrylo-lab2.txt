@@ -1,0 +1,2343 @@
+МІНІСТЕРСТВО ОСВІТИ І НАУКИ УКРАЇНИ
+ХАРКІВСЬКИЙ НАЦІОНАЛЬНИЙ УНІВЕРСИТЕТ РАДІОЕЛЕКТРОНІКИ
+
+Кафедра Програмної інженерії
+
+Звіт
+з лабораторної роботи №2
+з дисципліни: «Аналіз та рефакторинг коду»
+з теми: «Розробка бази даних для серверної частини програмної системи та
+прикладного програмного інтерфейсу (API)»
+
+Виконав:
+
+Перевірив:
+
+ст. гр. ПЗПІ-23-5
+
+cт. викладач кафедри ПІ
+
+Савєльєв К. С.
+
+Сокорчук І. П.
+
+Харків – 2025
+
+2
+1 ІСТОРІЯ ЗМІН
+№ Дата
+1 16.12.2025
+
+Версія звіту
+1.0
+
+Опис змін та виправлень
+Початкова версія
+
+3
+2 ЗАВДАННЯ
+–
+
+Розробити будову програмної системи;
+
+–
+
+Створити UML діаграму прецедентів для серверної частини системи;
+
+–
+
+Створити ER діаграму даних;
+
+–
+
+Розробити базу даних (БД) програмної системи;
+
+–
+
+Створити діаграму структури БД;
+
+–
+
+Розробити функції роботи з БД (ORM або CoRM тощо);
+
+–
+
+Розробити API для взаємодії серверної частини з клієнтами;
+
+–
+
+Створити специфікацію розробленого API;
+
+–
+
+Створити програмну реалізацію API та функцій роботи з БД;
+
+–
+
+Перевірити роботу створеного програмного коду серверної частини
+системи;
+
+–
+
+Завантажити або оновити створений програмний код у GitHub
+репозиторій.
+
+4
+3 ОПИС ВИКОНАНОЇ РОБОТИ
+У ході виконання роботи було розроблено будову програмної системи
+для автоматизації процесів видавницта, див. рис. Б.1 для перегляду діаграми
+прецедентів, де описана комунікація між елементами системи.
+Серверна частина являє собою RESTful API, що реалізоване на мові
+TypeScript, з використанням фреймворку Fastify. У якості СУБД було обрано
+PostgreSQL, а для роботи з базою даних використано Drizzle ORM (див. рис. Б.2Б.3 для огляду ER діаграми та схеми БД). Приклад таблиці, створеної за допомогою
+примітивів Drizzle ORM:
+export const manuscriptTable = pgTable(
+'manuscript',
+(t) => ({
+...baseTableAttrs,
+deadlineAt: t.timestamp({ withTimezone: true, mode: 'date' }),
+name: t.varchar().notNull(),
+description: t.text(),
+publicationType: t.varchar().notNull(),
+language: t.varchar().notNull(),
+status: t.varchar().notNull(),
+organizationId: t
+.uuid()
+.notNull()
+.references(() => organizationTable.id, { onDelete:
+'cascade' }),
+}),
+(t) => [
+index('manuscript_status_idx').on(t.status, t.organizationId),
+index('manuscript_type_idx').on(t.publicationType,
+t.organizationId),
+index('manuscript_language_idx').on(t.language,
+t.organizationId),
+unique('manuscript_name_org_uidx').on(t.name, t.organizationId),
+],
+)
+
+Для зберігання метаданих для сесій користувачів та кешування і інвалідації
+запитів до БД, було використано нереляційну БД Redis.
+Архітектура серверної частини є модульним монолітом, що дозволить
+у майбутньому легко масштабувати систему та додавати нові функціональні
+можливості, не ускладнюючи при цьому процес деплою та організації комунікації
+між контейнерами, як би було при використанні мікросервісної архітектури.
+Під час розробки системи були використанні такі патерни, як інʼєккція
+залежностей та репозиторій, що сприяє підтримуваності та тестованості коду.
+
+5
+Аби запобігти дублюванню коду та забезпечити повторне використання,
+було створено базовий клас репозиторію EntityRepository, який реалізує загальні
+методи для роботи з сутностями в базі даних:
+export class EntityRepository<
+Entity extends { id: ID },
+ID extends string | number,
+> implements Repository<Entity, ID>
+{
+protected readonly db: DatabaseClient
+private readonly table: EntityTable<ID>
+constructor({ db, table }: EntityRepositoryDependencies<ID>) {
+this.db = db
+this.table = table
+}
+async findAll(): Promise<Entity[]> {
+return this.db.select().from(this.table) as Promise<Entity[]>
+}
+async findById(id: ID): Promise<Option<Entity>> {
+const rows = await this.db
+.select()
+.from(this.table)
+.where(eq(this.table.id, id))
+.limit(1)
+const entity = rows.at(0) as Entity | undefined
+return entity ? Some(entity) : None
+}
+async existsById(id: ID): Promise<boolean> {
+const rows = await this.db.execute<{ exists: boolean }>(
+buildExistsQuery({
+table: this.table,
+condition: eq(this.table.id, id),
+}),
+)
+return rows.at(0)?.exists ?? false
+}
+async deleteById(id: ID): Promise<void> {
+await this.db.delete(this.table).where(eq(this.table.id, id))
+}
+}
+
+Для більш ефективної обробки нульових значень та як явних, так і неявних
+помилок, ніж це дозволяє обрана мова прогамування, було використано класи
+Option та Result, натхненні мовою Rust, з бібліотеки ts-results.
+Приклад викиду помилок за допомогою класу Result:
+
+6
+sync createOne(data: CreateTag): Promise<Result<Tag, HttpError>> {
+try {
+const rows = await
+this.db.insert(tagTable).values(data).returning()
+const tag = rows.at(0)
+return Ok(tag!)
+} catch (e: unknown) {
+if (
+e instanceof Error &&
+e.cause instanceof postgres.PostgresError &&
+e.cause.code === DUPLICATE_KEY_ERR_CODE
+) {
+return Err(new TagAlreadyExistsError(data.name))
+}
+return Err(new InternalServerError())
+}
+}
+
+Приклад обробки помилки:
+const result = await tagsRepository.createOne(request.body)
+if (result.isErr()) {
+logger.error(`Error creating tag: ${result.error.message}`)
+await activityLog.logInsert({
+entity: ENTITY.TAG,
+severity: LOG_SEVERITY.ERROR,
+description: `Error creating tag in organization
+'${request.body.organizationId}': ${result.error.message}`,
+performedBy: request.userId as string,
+})
+return
+reply.status(result.error.code).send(result.error.toObject())
+}
+
+Система виконує валідацію вхідних та вихідних даних за допомогою
+бібліотеки для рантайм валідації zod, що надає засоби для декларативного опису
+схем даних, та маніпуляцій над ними і дозволяє забезпечити цілісність даних та
+уникнути потенційних помилок під час обробки запитів. Приклад використання zod
+для опису схеми рукопису:
+const ManuscriptModelSchema = z.strictObject({
+id: z.uuidv7().describe('Unique identifier of the manuscript'),
+createdAt: z.coerce.date().describe('Creation timestamp of the
+manuscript'),
+updatedAt: z.coerce
+.date()
+.describe('Last update timestamp of the manuscript'),
+deadlineAt: z.coerce.date().describe('Deadline of the manuscript'),
+
+7
+name: z.string().min(5).max(100).describe('Name of the
+manuscript'),
+description: z
+.string()
+.nullable()
+.default(null)
+.describe('Description of the manuscript'),
+status: z
+.enum(Object.values(MANUSCRIPT_STATUS))
+.describe('Status of the manuscript'),
+publicationType: z
+.enum(Object.values(PUBLICATION_TYPE))
+.describe('Publication type of the manuscript'),
+language: z
+.string()
+.min(2)
+.max(5)
+.describe('Language code of the manuscript'),
+organizationId: z
+.uuidv7()
+.describe('Organization identifier associated with the
+manuscript'),
+})
+
+Система дозволяє завантаження файлів, у якості сервісу для зберігання файлів
+було обрано Amazon S3 через його надійність та масштабованість. Приклад сервісу
+для роботи з S3:
+export class FileUploadServiceImpl implements FileUploadService {
+private readonly db: DatabaseClient
+private readonly s3: S3Client
+private readonly bucketName: string
+constructor({ db, s3, config }: ManuscriptsInjectableDependencies)
+{
+const { bucket } = config.s3
+this.db = db.client
+this.s3 = s3
+this.bucketName = bucket
+}
+async uploadFile({
+fileBuffer,
+fileName,
+mimeType,
+manuscriptId,
+uploadedBy,
+}: UploadFileArgs): Promise<Result<None, HttpError>> {
+const name = `${Date.now()}-${fileName}`
+try {
+await Promise.all([
+this.s3.send(
+new PutObjectCommand({
+Bucket: this.bucketName,
+Key: name,
+
+8
+Body: fileBuffer,
+ContentType: mimeType,
+}),
+),
+this.db.insert(fileTable).values({
+name,
+path: this.getFileUrl(name),
+uploadedBy,
+mimeType,
+manuscriptId,
+sizeInBytes: fileBuffer.length,
+}),
+])
+return Ok(None)
+} catch {
+return Err(new InternalServerError())
+}
+}
+async deleteFile(fileName: string): Promise<Result<None,
+HttpError>> {
+try {
+await Promise.all([
+this.s3.send(
+new DeleteObjectCommand({ Bucket: this.bucketName, Key:
+fileName }),
+),
+this.db.delete(fileTable).where(eq(fileTable.name,
+fileName)),
+])
+return Ok(None)
+} catch {
+return Err(new InternalServerError())
+}
+}
+private getFileUrl(key: string): string {
+return `https://${this.bucketName}.s3.
+${this.s3.config.region}.amazonaws.com/${key}`
+}
+}
+
+Для кожного маршруту API було створено OpenAPI специфікацію, на базі
+JSON-схем зі структур описаних з використанням примітивів бібліотеки zod.
+Приклад специфікації маршруту для створення рукопису:
+schema: {
+summary: 'Create a new Manuscript',
+description: 'Create a new manuscript for a particular
+organization',
+tags: ['Manuscripts'],
+body: CreateManuscriptSchema,
+response: {
+201: ManuscriptModelSchema.describe(
+'Manuscript created successfully',
+
+9
+),
+400: generateFailedValidationResponse().describe(
+'Request body does not match schema',
+),
+401: generateFailedHttpResponse(401).describe(
+'User is not authenticated',
+),
+403: generateFailedHttpResponse(403).describe(
+'User is not authorized to create manuscript',
+),
+409: generateFailedHttpResponse(409).describe(
+'Manuscript with such name already exists in the organization',
+),
+500: generateFailedHttpResponse(500).describe(
+'Internal server error while creating manuscript',
+),
+},
+},
+
+Для розробленої системи доволі важливо бути захищеною та зводити до
+мінімуму ризики несанкціонованого доступу до даних. Тому було реалізовано
+комплексну систему аутентифікації та авторизації користувачів на основі сесій, а
+доступ до різних маршрутів контролюється за допомогою ролей та прав доступу.
+Приклад функції для перевірки прав доступу користувача до коментаря:
+export const checkCommentPermissions = (permission:
+CommentPermission) => {
+return async (
+request: FastifyRequest<{ Params: { id: string } }>,
+reply: FastifyReply,
+) => {
+const { id: commentId } = request.params
+const { auth, commentsRepository, logger } =
+request.diScope.cradle
+const activeMember = await auth.api.getActiveMember({
+headers: fromNodeHeaders(request.headers),
+})
+if (!activeMember) {
+const error = new UnauthorizedError()
+return reply.status(error.code).send(error.toObject())
+}
+const exists = await commentsRepository.existsById(commentId)
+if (!exists) {
+const error = new CommentNotFoundError(commentId)
+return reply.status(error.code).send(error.toObject())
+}
+const isInOrg = await
+commentsRepository.isCommentInOrganization({
+
+10
+commentId,
+organizationId: activeMember.organizationId,
+})
+if (!isInOrg) {
+const error = new PermissionsError()
+return reply.status(error.code).send(error.toObject())
+}
+const isAuthor = await commentsRepository.isCommentAuthor({
+commentId,
+memberId: activeMember.id,
+})
+if (permission === 'update') {
+if (!isAuthor) {
+const error = new PermissionsError()
+logger.warn(
+`Member ${activeMember.id} attempted to update comment
+${commentId} without ownership`,
+)
+return reply.status(error.code).send(error.toObject())
+}
+} else if (permission === 'delete') {
+const isAdmin =
+activeMember.role === 'admin' || activeMember.role ===
+'owner'
+if (!isAuthor && !isAdmin) {
+const error = new PermissionsError()
+logger.warn(
+`Member ${activeMember.id} attempted to delete comment
+${commentId} without permissions`,
+)
+return reply.status(error.code).send(error.toObject())
+}
+}
+}
+}
+
+Для хешування ж паролів використовується алгоритм Argon2, що був
+признаним, як найкращий для захисту паролів.
+
+11
+4 ВИСНОВКИ
+В ході виконання лабораторної роботи було розроблено будову програмної
+системи для автоматизації процесів видавництва. Серверна частина реалізована як
+RESTful API з використанням TypeScript та Fastify, а для роботи з базою даних
+обрано PostgreSQL з Drizzle ORM.
+Було впроваджено комплексну систему аутентифікації та авторизації
+користувачів, а також забезпечено захист даних. Розроблена система є модульною,
+що сприяє її масштабованості та підтримуваності.
+
+12
+5 ВИКОРИСТАНІ ДЖЕРЕЛА
+а)
+
+OpenAPI specification - version 3.1.0 | swagger. API Documentation &
+Design Tools for Teams | Swagger. URL: https://swagger.io/specification/
+(дата звернення: 16.12.2025).
+
+б)
+
+About the unified modeling language specification version 2.5. Object
+Management Group. URL: https://www.omg.org/spec/UML/2.5/ (дата
+звернення: 16.12.2025).
+
+в)
+
+Drizzle ORM - next gen typescript ORM. Drizzle ORM - next gen TypeScript
+ORM. URL: https://orm.drizzle.team/ (дата звернення: 16.12.2025).
+
+г)
+
+Powell P., Smalley I. What Is a REST API (RESTful API)? | IBM. IBM. URL:
+https://www.ibm.com/think/topics/rest-apis (дата звернення: 16.12.2025).
+
+13
+ДОДАТОК А
+Відеозапис
+Відеозапис презентації результатів лабораторної роботи: https://youtu.be/8XydtvKNmcE
+Хронологічний опис відеозапису:
+00:00 - Представлення
+00:57 - Тестування авторизації
+01:15 - Тестування ендпоінтів повʼязаних з організаціями
+02:20 - Тестування ендпоінтів повʼязаних з рукописами та тегами
+05:45 - Показ пагінації основаної на курсорах
+07:05 - Тестування ендпоінтів повʼязаних з коментарями
+08:28 - Тестування ендпоінтів повʼязаних з етапами публікації
+
+14
+ДОДАТОК Б
+Графічні матеріали
+
+Рисунок Б.1 – Діаграма прецедентів програмної системи
+
+15
+
+Рисунок Б.2 – ER діаграма програмної системи
+
+16
+
+Рисунок Б.3 – Схема БД програмної системи
+
+17
+ДОДАТОК В
+Специфікація API
+В.1 Перевірка системи
+В.1.1 GET /api/health
+Повертає статус працездатності системи.
+В.1.1.1 Відповідь (200)
+{
+"uptime": 12345.67,
+"message": "OK",
+"date": "2024-01-15T10:30:00Z"
+}
+
+В.1.1.2 Приклад
+curl -X GET http://localhost:8080/api/health
+
+В.2 Аутентифікація та управління користувачами
+В.2.1 POST /api/auth/sign-up/email
+Реєстрація користувача за допомогою email та пароля.
+В.2.1.1 Тіло запиту
+{
+"name": "Іван Петренко",
+"email": "ivan@example.com",
+"password": "securePassword123",
+"image": "https://example.com/avatar.jpg",
+"callbackURL": "https://example.com/verify",
+"rememberMe": true
+}
+
+В.2.1.2 Відповідь (200)
+{
+"token": "session_token_here",
+"user": {
+"id": "user_123",
+"email": "ivan@example.com",
+"name": "Іван Петренко",
+"image": null,
+
+18
+"emailVerified": false,
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z"
+}
+}
+
+В.2.1.3 Помилкові відповіді
+–
+
+400 - Некоректні параметри
+
+–
+
+422 - Користувач вже існує або не вдалося створити
+
+В.2.1.4 Приклад
+curl -X POST http://localhost:8080/api/auth/sign-up/email \
+-H "Content-Type: application/json" \
+-d '{
+"name": "Іван Петренко",
+"email": "ivan@example.com",
+"password": "securePassword123"
+}'
+
+В.2.2 POST /api/auth/sign-in/email
+Вхід за допомогою email та пароля.
+В.2.2.1 Тіло запиту
+{
+"email": "ivan@example.com",
+"password": "securePassword123",
+"callbackURL": "https://example.com/dashboard",
+"rememberMe": true
+}
+
+В.2.2.2 Відповідь (200)
+{
+"redirect": false,
+"token": "session_token_here",
+"url": null,
+"user": {
+"id": "user_123",
+"email": "ivan@example.com",
+"name": "Іван Петренко",
+"emailVerified": true,
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z"
+}
+}
+
+19
+В.2.2.3 Приклад
+curl -X POST http://localhost:8080/api/auth/sign-in/email \
+-H "Content-Type: application/json" \
+-d '{
+"email": "ivan@example.com",
+"password": "securePassword123"
+}'
+
+В.2.3 POST /api/auth/sign-in/social
+Вхід через соціальний провайдер.
+В.2.3.1 Тіло запиту
+{
+"provider": "google",
+"callbackURL": "https://example.com/callback",
+"errorCallbackURL": "https://example.com/error",
+"disableRedirect": false,
+"scopes": ["email", "profile"],
+"idToken": {
+"token": "id_token_from_provider",
+"nonce": "nonce_value",
+"accessToken": "access_token",
+"refreshToken": "refresh_token"
+}
+}
+
+В.2.3.2 Відповідь (200)
+{
+"redirect": false,
+"token": "session_token_here",
+"user": {
+"id": "user_123",
+"email": "ivan@example.com",
+"name": "Іван Петренко"
+},
+"url": "https://accounts.google.com/o/oauth2/..."
+}
+
+В.2.3.3 Приклад
+curl -X POST http://localhost:8080/api/auth/sign-in/social \
+-H "Content-Type: application/json" \
+-d '{
+"provider": "google",
+"callbackURL": "https://example.com/callback"
+}'
+
+20
+В.2.4 GET /api/auth/get-session
+Отримання поточної сесії.
+В.2.4.1 Відповідь (200)
+{
+"session": {
+"id": "session_123",
+"token": "session_token",
+"expiresAt": "2024-02-15T10:30:00Z",
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z",
+"userId": "user_123",
+"ipAddress": "192.168.1.1",
+"userAgent": "Mozilla/5.0...",
+"activeOrganizationId": "org_123"
+},
+"user": {
+"id": "user_123",
+"email": "ivan@example.com",
+"name": "Іван Петренко",
+"emailVerified": true
+}
+}
+
+В.2.4.2 Приклад
+curl -X GET http://localhost:8080/api/auth/get-session \
+-H "Authorization: Bearer <token>"
+
+В.2.5 POST /api/auth/sign-out
+Вихід поточного користувача.
+В.2.5.1 Відповідь (200)
+{
+"success": true
+}
+
+В.2.5.2 Приклад
+curl -X POST http://localhost:8080/api/auth/sign-out \
+-H "Authorization: Bearer <token>"
+
+21
+В.2.6 GET /api/auth/verify-email
+Підтвердження email користувача.
+В.2.6.1 Параметри запиту
+В.2.6.2 Відповідь (200)
+{
+"user": {
+"id": "user_123",
+"email": "ivan@example.com",
+"emailVerified": true
+},
+"status": true
+}
+
+В.2.6.3 Приклад
+curl -X GET "http://localhost:8080/api/auth/verify-email?token=
+verification_token"
+
+В.2.7 POST /api/auth/send-verification-email
+Надсилання листа для підтвердження email.
+В.2.7.1 Тіло запиту
+{
+"email": "ivan@example.com",
+"callbackURL": "https://example.com/verify"
+}
+
+В.2.7.2 Відповідь (200)
+{
+"status": true
+}
+
+В.2.7.3 Приклад
+curl -X POST http://localhost:8080/api/auth/send-verification-email \
+-H "Content-Type: application/json" \
+-d '{
+"email": "ivan@example.com",
+"callbackURL": "https://example.com/verify"
+}'
+
+22
+В.2.8 POST /api/auth/request-password-reset
+Запит на скидання пароля.
+В.2.8.1 Тіло запиту
+{
+"email": "ivan@example.com",
+"redirectTo": "https://example.com/reset-password"
+}
+
+В.2.8.2 Відповідь (200)
+{
+"status": true,
+"message": "Password reset email sent"
+}
+
+В.2.8.3 Приклад
+curl -X POST http://localhost:8080/api/auth/request-password-reset \
+-H "Content-Type: application/json" \
+-d '{
+"email": "ivan@example.com",
+"redirectTo": "https://example.com/reset-password"
+}'
+
+В.2.9 POST /api/auth/reset-password
+Скидання пароля.
+В.2.9.1 Тіло запиту
+{
+"newPassword": "newSecurePassword123",
+"token": "reset_token_here"
+}
+
+В.2.9.2 Відповідь (200)
+{
+"status": true
+}
+
+23
+В.2.9.3 Приклад
+curl -X POST http://localhost:8080/api/auth/reset-password \
+-H "Content-Type: application/json" \
+-d '{
+"newPassword": "newSecurePassword123",
+"token": "reset_token_here"
+}'
+
+В.2.10 POST /api/auth/change-password
+Зміна пароля користувача.
+В.2.10.1 Тіло запиту
+{
+"currentPassword": "oldPassword123",
+"newPassword": "newSecurePassword123",
+"revokeOtherSessions": true
+}
+
+В.2.10.2 Відповідь (200)
+{
+"token": "new_session_token",
+"user": {
+"id": "user_123",
+"email": "ivan@example.com",
+"name": "Іван Петренко"
+}
+}
+
+В.2.10.3 Приклад
+curl -X POST http://localhost:8080/api/auth/change-password \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"currentPassword": "oldPassword123",
+"newPassword": "newSecurePassword123"
+}'
+
+В.2.11 POST /api/auth/change-email
+Зміна email користувача.
+
+24
+В.2.11.1 Тіло запиту
+{
+"newEmail": "new.email@example.com",
+"callbackURL": "https://example.com/verify-new-email"
+}
+
+В.2.11.2 Відповідь (200)
+{
+"user": {
+"id": "user_123",
+"email": "new.email@example.com"
+},
+"status": true,
+"message": "Email updated"
+}
+
+В.2.11.3 Помилкові відповіді
+–
+
+422 - Email вже існує
+
+В.2.11.4 Приклад
+curl -X POST http://localhost:8080/api/auth/change-email \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"newEmail": "new.email@example.com"
+}'
+
+В.2.12 POST /api/auth/update-user
+Оновлення даних поточного користувача.
+В.2.12.1 Тіло запиту
+{
+"name": "Іван Петренко-Оновлений",
+"image": "https://example.com/new-avatar.jpg"
+}
+
+В.2.12.2 Відповідь (200)
+{
+"user": {
+"id": "user_123",
+"name": "Іван Петренко-Оновлений",
+"email": "ivan@example.com",
+
+25
+"image": "https://example.com/new-avatar.jpg"
+}
+}
+
+В.2.12.3 Приклад
+curl -X POST http://localhost:8080/api/auth/update-user \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"name": "Іван Петренко-Оновлений"
+}'
+
+В.2.13 POST /api/auth/delete-user
+Видалення користувача.
+В.2.13.1 Тіло запиту
+{
+"password": "currentPassword123",
+"callbackURL": "https://example.com/goodbye",
+"token": "deletion_verification_token"
+}
+
+В.2.13.2 Відповідь (200)
+{
+"success": true,
+"message": "User deleted"
+}
+
+В.2.13.3 Приклад
+curl -X POST http://localhost:8080/api/auth/delete-user \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"password": "currentPassword123"
+}'
+
+В.2.14 GET /api/auth/list-sessions
+Список усіх активних сесій користувача.
+
+26
+В.2.14.1 Відповідь (200)
+[
+{
+"id": "session_123",
+"token": "session_token",
+"expiresAt": "2024-02-15T10:30:00Z",
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z",
+"userId": "user_123",
+"ipAddress": "192.168.1.1",
+"userAgent": "Mozilla/5.0..."
+}
+]
+
+В.2.14.2 Приклад
+curl -X GET http://localhost:8080/api/auth/list-sessions \
+-H "Authorization: Bearer <token>"
+
+В.2.15 POST /api/auth/revoke-session
+Скасування окремої сесії.
+В.2.15.1 Тіло запиту
+{
+"token": "session_token_to_revoke"
+}
+
+В.2.15.2 Відповідь (200)
+{
+"status": true
+}
+
+В.2.15.3 Приклад
+curl -X POST http://localhost:8080/api/auth/revoke-session \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"token": "session_token_to_revoke"
+}'
+
+В.2.16 POST /api/auth/revoke-sessions
+Скасування всіх сесій користувача.
+
+27
+В.2.16.1 Відповідь (200)
+{
+"status": true
+}
+
+В.2.16.2 Приклад
+curl -X POST http://localhost:8080/api/auth/revoke-sessions \
+-H "Authorization: Bearer <token>"
+
+В.2.17 POST /api/auth/revoke-other-sessions
+Скасування всіх інших сесій, крім поточної.
+В.2.17.1 Відповідь (200)
+{
+"status": true
+}
+
+В.2.17.2 Приклад
+curl -X POST http://localhost:8080/api/auth/revoke-other-sessions \
+-H "Authorization: Bearer <token>"
+
+В.2.18 POST /api/auth/link-social
+Прив’язка соціального акаунту до користувача.
+В.2.18.1 Тіло запиту
+{
+"provider": "github",
+"callbackURL": "https://example.com/callback",
+"errorCallbackURL": "https://example.com/error",
+"disableRedirect": false
+}
+
+В.2.18.2 Відповідь (200)
+{
+"url": "https://github.com/login/oauth/authorize?...",
+"redirect": true,
+"status": true
+}
+
+28
+В.2.18.3 Приклад
+curl -X POST http://localhost:8080/api/auth/link-social \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"provider": "github"
+}'
+
+В.2.19 GET /api/auth/list-accounts
+Список усіх прив’язаних акаунтів користувача.
+В.2.19.1 Відповідь (200)
+[
+{
+"id": "account_123",
+"providerId": "google",
+"accountId": "google_user_id",
+"userId": "user_123",
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z",
+"scopes": ["email", "profile"]
+}
+]
+
+В.2.19.2 Приклад
+curl -X GET http://localhost:8080/api/auth/list-accounts \
+-H "Authorization: Bearer <token>"
+
+В.2.20 POST /api/auth/unlink-account
+Відв’язка акаунту провайдера.
+В.2.20.1 Тіло запиту
+{
+"providerId": "google",
+"accountId": "google_account_id"
+}
+
+В.2.20.2 Відповідь (200)
+{
+"status": true
+}
+
+29
+В.2.20.3 Приклад
+curl -X POST http://localhost:8080/api/auth/unlink-account \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"providerId": "google"
+}'
+
+В.3 Організації
+В.3.1 POST /organization/create
+Створення організації.
+В.3.1.1 Тіло запиту
+{
+"name": "Моя компанія",
+"slug": "my-company",
+"logo": "https://example.com/logo.png",
+"metadata": "{\"industry\": \"tech\"}",
+"keepCurrentActiveOrganization": false
+}
+
+В.3.1.2 Відповідь (200)
+{
+"id": "org_123",
+"name": "Моя компанія",
+"slug": "my-company",
+"logo": "https://example.com/logo.png",
+"createdAt": "2024-01-15T10:30:00Z",
+"metadata": "{\"industry\": \"tech\"}"
+}
+
+В.3.1.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/create \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"name": "Моя компанія",
+"slug": "my-company"
+}'
+
+В.3.2 POST /organization/update
+Оновлення організації.
+
+30
+В.3.2.1 Тіло запиту
+{
+"data": {
+"name": "Оновлена назва компанії",
+"slug": "updated-company",
+"logo": "https://example.com/new-logo.png",
+"metadata": "{\"industry\": \"finance\"}"
+},
+"organizationId": "org_123"
+}
+
+В.3.2.2 Відповідь (200)
+{
+"id": "org_123",
+"name": "Оновлена назва компанії",
+"slug": "updated-company",
+"logo": "https://example.com/new-logo.png",
+"createdAt": "2024-01-15T10:30:00Z",
+"metadata": "{\"industry\": \"finance\"}"
+}
+
+В.3.2.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/update \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"data": {
+"name": "Оновлена назва компанії"
+},
+"organizationId": "org_123"
+}'
+
+В.3.3 POST /api/auth/organization/delete
+Видалення організації.
+В.3.3.1 Тіло запиту
+{
+"organizationId": "org_123"
+}
+
+В.3.3.2 Відповідь (200)
+Повертає ID видаленої організації.
+
+31
+{
+"id": "org_123"
+}
+
+В.3.3.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/delete \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"organizationId": "org_123"
+}'
+
+В.3.4 POST /organization/set-active
+Встановлення активної організації.
+В.3.4.1 Тіло запиту
+{
+"organizationId": "org_123"
+}
+
+або
+{
+"organizationSlug": "my-company"
+}
+
+В.3.4.2 Відповідь (200)
+{
+"id": "org_123",
+"name": "Моя компанія",
+"slug": "my-company",
+"createdAt": "2024-01-15T10:30:00Z"
+}
+
+В.3.4.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/set-active \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"organizationId": "org_123"
+}'
+
+32
+В.3.5 GET /api/auth/organization/get-full-organization
+Отримання повної інформації про активну організацію.
+В.3.5.1 Відповідь (200)
+{
+"id": "org_123",
+"name": "Моя компанія",
+"slug": "my-company",
+"logo": "https://example.com/logo.png",
+"createdAt": "2024-01-15T10:30:00Z",
+"metadata": "{\"industry\": \"tech\"}"
+}
+
+В.3.5.2 Приклад
+curl -X GET http://localhost:8080/api/auth/organization/get-fullorganization \
+-H "Authorization: Bearer <token>"
+
+В.3.6 GET /api/auth/organization/list
+Список усіх організацій користувача.
+В.3.6.1 Відповідь (200)
+[
+{
+"id": "org_123",
+"name": "Моя компанія",
+"slug": "my-company",
+"createdAt": "2024-01-15T10:30:00Z"
+},
+{
+"id": "org_456",
+"name": "Інша компанія",
+"slug": "other-company",
+"createdAt": "2024-01-20T10:30:00Z"
+}
+]
+
+В.3.6.2 Приклад
+curl -X GET http://localhost:8080/api/auth/organization/list \
+-H "Authorization: Bearer <token>"
+
+33
+В.3.7 POST /api/auth/organization/invite-member
+Запрошення користувача до організації.
+В.3.7.1 Тіло запиту
+{
+"email": "new.member@example.com",
+"role": "member",
+"organizationId": "org_123",
+"resend": false
+}
+
+В.3.7.2 Відповідь (200)
+{
+"id": "invite_123",
+"email": "new.member@example.com",
+"role": "member",
+"organizationId": "org_123",
+"inviterId": "user_123",
+"status": "pending",
+"expiresAt": "2024-02-15T10:30:00Z",
+"createdAt": "2024-01-15T10:30:00Z"
+}
+
+В.3.7.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/invitemember \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"email": "new.member@example.com",
+"role": "member",
+"teamId": "team_456"
+}'
+
+В.3.8 POST /api/auth/organization/accept-invitation
+Прийняття запрошення до організації.
+В.3.8.1 Тіло запиту
+{
+"invitationId": "invite_123"
+}
+
+34
+В.3.8.2 Відповідь (200)
+{
+"invitation": {
+"id": "invite_123",
+"status": "accepted"
+},
+"member": {
+"id": "member_123",
+"userId": "user_456",
+"organizationId": "org_123",
+"role": "member"
+}
+}
+
+В.3.8.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/acceptinvitation \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"invitationId": "invite_123"
+}'
+
+В.3.9 POST /api/auth/organization/reject-invitation
+Відхилення запрошення до організації.
+В.3.9.1 Тіло запиту
+{
+"invitationId": "invite_123"
+}
+
+В.3.9.2 Відповідь (200)
+{
+"invitation": {
+"id": "invite_123",
+"status": "rejected"
+},
+"member": null
+}
+
+В.3.9.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/rejectinvitation \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+
+35
+-d '{
+"invitationId": "invite_123"
+}'
+
+В.3.10 POST /api/auth/organization/cancel-invitation
+Скасування запрошення до організації.
+В.3.10.1 Тіло запиту
+{
+"invitationId": "invite_123"
+}
+
+В.3.10.2 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/cancelinvitation \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"invitationId": "invite_123"
+}'
+
+В.3.11 GET /api/auth/organization/get-invitation
+Отримання інформації про запрошення.
+В.3.11.1 Відповідь (200)
+{
+"id": "invite_123",
+"email": "new.member@example.com",
+"role": "member",
+"organizationId": "org_123",
+"inviterId": "user_123",
+"status": "pending",
+"expiresAt": "2024-02-15T10:30:00Z",
+"organizationName": "Моя компанія",
+"organizationSlug": "my-company",
+"inviterEmail": "admin@example.com"
+}
+
+В.3.11.2 Приклад
+curl -X GET "http://localhost:8080/api/auth/organization/getinvitation?id=invite_123" \
+-H "Authorization: Bearer <token>"
+
+36
+В.3.12 GET /api/auth/organization/list-invitations
+Список запрошень організації.
+В.3.12.1 Приклад
+curl -X GET http://localhost:8080/api/auth/organization/listinvitations \
+-H "Authorization: Bearer <token>"
+
+В.3.13 GET /api/auth/organization/list-user-invitations
+Список запрошень, отриманих користувачем.
+В.3.13.1 Відповідь (200)
+[
+{
+"id": "invite_123",
+"email": "user@example.com",
+"role": "member",
+"organizationId": "org_123",
+"organizationName": "Моя компанія",
+"inviterId": "user_456",
+"status": "pending",
+"expiresAt": "2024-02-15T10:30:00Z",
+"createdAt": "2024-01-15T10:30:00Z"
+}
+]
+
+В.3.13.2 Приклад
+curl -X GET http://localhost:8080/api/auth/organization/list-userinvitations \
+-H "Authorization: Bearer <token>"
+
+В.3.14 GET /api/auth/organization/list-members
+Список учасників організації.
+В.3.14.1 Приклад
+curl -X GET http://localhost:8080/api/auth/organization/list-members
+\
+-H "Authorization: Bearer <token>"
+
+37
+В.3.15 GET /api/auth/organization/get-active-member
+Отримання даних поточного учасника активної організації.
+В.3.15.1 Відповідь (200)
+{
+"id": "member_123",
+"userId": "user_123",
+"organizationId": "org_123",
+"role": "admin"
+}
+
+В.3.15.2 Приклад
+curl -X GET http://localhost:8080/api/auth/organization/get-activemember \
+-H "Authorization: Bearer <token>"
+
+В.3.16 POST /api/auth/organization/update-member-role
+Оновлення ролі учасника організації.
+В.3.16.1 Тіло запиту
+{
+"memberId": "member_123",
+"role": "admin",
+"organizationId": "org_123"
+}
+
+В.3.16.2 Відповідь (200)
+{
+"member": {
+"id": "member_123",
+"userId": "user_456",
+"organizationId": "org_123",
+"role": "admin"
+}
+}
+
+В.3.16.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/updatemember-role \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+
+38
+"memberId": "member_123",
+"role": "admin"
+}'
+
+В.3.17 POST /api/auth/organization/remove-member
+Видалення учасника з організації.
+В.3.17.1 Тіло запиту
+{
+"memberIdOrEmail": "member_123",
+"organizationId": "org_123"
+}
+
+В.3.17.2 Відповідь (200)
+{
+"member": {
+"id": "member_123",
+"userId": "user_456",
+"organizationId": "org_123",
+"role": "member"
+}
+}
+
+В.3.17.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/removemember \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"memberIdOrEmail": "member_123"
+}'
+
+В.3.18 POST /api/auth/organization/leave
+Вихід з організації.
+В.3.18.1 Тіло запиту
+{
+"organizationId": "org_123"
+}
+
+39
+В.3.18.2 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/leave \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"organizationId": "org_123"
+}'
+
+В.3.19 POST /api/auth/organization/check-slug
+Перевірка доступності slug організації.
+В.3.19.1 Тіло запиту
+{
+"slug": "my-new-company"
+}
+
+В.3.19.2 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/check-slug \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"slug": "my-new-company"
+}'
+
+В.3.20 POST /api/auth/organization/has-permission
+Перевірка наявності дозволу у користувача.
+В.3.20.1 Тіло запиту
+{
+"permissions": {
+"action": "create",
+"resource": "manuscript"
+}
+}
+
+В.3.20.2 Відповідь (200)
+{
+"success": true,
+"error": null
+}
+
+40
+В.3.20.3 Приклад
+curl -X POST http://localhost:8080/api/auth/organization/haspermission \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"permissions": {
+"action": "create",
+"resource": "manuscript"
+}
+}'
+
+В.4 Рукописи
+В.4.1 POST /api/manuscripts
+Створення нового рукопису для організації.
+В.4.1.1 Тіло запиту
+{
+"name": "Моя наукова стаття",
+"description": "Комплексне дослідження...",
+"deadlineAt": "2024-06-01T00:00:00Z",
+"status": "draft",
+"publicationType": "article",
+"language": "uk",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc",
+"tagIds": ["01234567-89ab-7cde-8901-234567890def"]
+}
+
+В.4.1.2 Відповідь (201)
+{
+"id": "01234567-89ab-7cde-8901-234567890abc",
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z",
+"deadlineAt": "2024-06-01T00:00:00Z",
+"name": "Моя наукова стаття",
+"description": "Комплексне дослідження...",
+"status": "draft",
+"publicationType": "article",
+"language": "uk",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc"
+}
+
+В.4.1.3 Помилкові відповіді
+–
+
+400 - Тіло запиту не відповідає схемі
+
+41
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має права створювати рукопис
+
+–
+
+409 - Рукопис з такою назвою вже існує в організації
+
+–
+
+500 - Внутрішня помилка сервера
+
+В.4.1.4 Приклад
+curl -X POST http://localhost:8080/api/manuscripts \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"name": "Дослідження змін клімату 2024",
+"description": "Аналіз кліматичних моделей",
+"deadlineAt": "2024-12-31T23:59:59Z",
+"status": "draft",
+"publicationType": "article",
+"language": "uk",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc"
+}'
+
+В.4.2 GET /api/manuscripts/{id}
+Отримання рукопису за його ідентифікатором.
+В.4.2.1 Відповідь (200)
+{
+"id": "01234567-89ab-7cde-8901-234567890abc",
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z",
+"deadlineAt": "2024-06-01T00:00:00Z",
+"name": "Моя наукова стаття",
+"description": "Комплексне дослідження...",
+"status": "draft",
+"publicationType": "article",
+"language": "uk",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc"
+}
+
+В.4.2.2 Помилкові відповіді
+–
+
+400 - Параметр ID не відповідає схемі
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має доступу до цього рукопису
+
+–
+
+404 - Рукопис не знайдено
+
+42
+В.4.2.3 Приклад
+curl -X GET http://localhost:8080/api/manuscripts/01234567-89ab-7cde8901-234567890abc \
+-H "Authorization: Bearer <token>"
+
+В.4.3 PUT /api/manuscripts/{id}
+Оновлення рукопису за його ідентифікатором.
+В.4.3.1 Тіло запиту
+Усі поля є необов’язковими.
+{
+"name": "Оновлена назва наукової статті",
+"description": "Оновлений опис",
+"deadlineAt": "2024-07-01T00:00:00Z",
+"status": "in_review",
+"publicationType": "book",
+"language": "en",
+"tagIds": ["01234567-89ab-7cde-8901-234567890def"]
+}
+
+В.4.3.2 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.4.3.3 Помилкові відповіді
+–
+
+400 - Параметр ID або тіло запиту не відповідає схемі
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має права оновлювати цей рукопис
+
+–
+
+404 - Рукопис не знайдено
+
+В.4.3.4 Приклад
+curl -X PUT http://localhost:8080/api/manuscripts/01234567-89ab-7cde8901-234567890abc \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"status": "in_review",
+"name": "Оновлена назва статті"
+}'
+
+43
+В.4.4 DELETE /api/manuscripts/{id}
+Видалення рукопису за його ідентифікатором.
+В.4.4.1 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.4.4.2 Помилкові відповіді
+–
+
+400 - Параметр ID не відповідає схемі
+
+–
+
+404 - Рукопис не знайдено
+
+В.4.4.3 Приклад
+curl -X DELETE http://localhost:8080/api/manuscripts/01234567-89ab-7
+cde-8901-234567890abc \
+-H "Authorization: Bearer <token>"
+
+В.4.5 GET /api/manuscripts/{id}/files
+Отримання файлів, пов’язаних з рукописом.
+В.4.5.1 Відповідь (200)
+[
+{
+"id": "01234567-89ab-7cde-8901-234567890abc",
+"createdAt": "2024-01-15T10:30:00Z",
+"name": "chapter1.docx",
+"mimeType": "application/vnd.openxmlformatsofficedocument.wordprocessingml.document",
+"sizeInBytes": 245678,
+"uploadedBy": "01234567-89ab-7cde-8901-234567890def",
+"manuscriptId": "01234567-89ab-7cde-8901-234567890abc"
+}
+]
+
+В.4.5.2 Помилкові відповіді
+–
+
+400 - Параметр ID не відповідає схемі
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має доступу до файлів цього рукопису
+
+–
+
+404 - Рукопис не знайдено
+
+44
+В.4.5.3 Приклад
+curl -X GET http://localhost:8080/api/manuscripts/01234567-89ab-7cde8901-234567890abc/files \
+-H "Authorization: Bearer <token>"
+
+В.4.6 POST /api/manuscripts/{id}/file
+Завантаження файлу до рукопису.
+В.4.6.1 Запит
+Завантаження файлу (multipart/form-data).
+В.4.6.2 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.4.6.3 Помилкові відповіді
+–
+
+400 - Параметр ID не відповідає схемі або завантажений файл
+некоректний
+
+В.4.6.4 Приклад
+curl -X POST http://localhost:8080/api/manuscripts/01234567-89ab-7
+cde-8901-234567890abc/file \
+-H "Authorization: Bearer <token>" \
+-F "file=@/path/to/document.pdf"
+
+В.4.7 DELETE /api/manuscripts/{manuscriptId}/files/{fileId}
+Видалення файлу рукопису.
+В.4.7.1 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.4.7.2 Помилкові відповіді
+–
+
+400 - Параметри ID не відповідають схемі
+
+–
+
+404 - Файл не знайдено
+
+45
+В.4.7.3 Приклад
+curl -X DELETE http://localhost:8080/api/manuscripts/01234567-89ab-7
+cde-8901-234567890abc/files/01234567-89ab-7cde-8901-234567890def \
+-H "Authorization: Bearer <token>"
+
+В.5 Теги
+В.5.1 POST /api/tags
+Створення нового тегу для організації рукописів.
+В.5.1.1 Тіло запиту
+{
+"name": "Наука",
+"color": "#FF5733",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc"
+}
+
+В.5.1.2 Відповідь (201)
+{
+"id": "01234567-89ab-7cde-8901-234567890abc",
+"createdAt": "2024-01-15T10:30:00Z",
+"name": "Наука",
+"color": "#FF5733",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc"
+}
+
+В.5.1.3 Помилкові відповіді
+–
+
+400 - Тіло запиту не відповідає схемі
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має права створювати тег
+
+–
+
+409 - Тег з такою назвою вже існує в організації
+
+В.5.1.4 Приклад
+curl -X POST http://localhost:8080/api/tags \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"name": "Дослідження",
+"color": "#3498DB",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc"
+}'
+
+46
+В.5.2 PUT /api/organizations/{organizationId}/tags/{tagId}
+Оновлення існуючого тегу.
+В.5.2.1 Тіло запиту
+Усі поля є необов’язковими.
+{
+"name": "Оновлена назва тегу",
+"color": "#27AE60"
+}
+
+В.5.2.2 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.5.2.3 Помилкові відповіді
+–
+
+400 - Тіло запиту або параметри не відповідають схемі
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має права оновлювати тег
+
+–
+
+404 - Тег з таким ID не існує в організації
+
+В.5.2.4 Приклад
+curl -X PUT http://localhost:8080/api/organizations/01234567-89ab-7
+cde-8901-234567890abc/tags/01234567-89ab-7cde-8901-234567890def \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"name": "Оновлена назва",
+"color": "#E74C3C"
+}'
+
+В.5.3 DELETE /api/organizations/{organizationId}/tags/{tagId}
+Видалення існуючого тегу.
+В.5.3.1 Відповідь (204)
+Успішна відповідь не містить вмісту.
+
+47
+В.5.3.2 Помилкові відповіді
+–
+
+400 - Параметри не відповідають схемі
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має права видаляти тег
+
+–
+
+404 - Тег з таким ID не існує в організації
+
+В.5.3.3 Приклад
+curl -X DELETE http://localhost:8080/api/organizations/01234567-89ab7cde-8901-234567890abc/tags/01234567-89ab-7cde-8901-234567890def \
+-H "Authorization: Bearer <token>"
+
+В.6 Організації
+В.6.1 GET /api/organizations/{id}/manuscripts
+Отримання рукописів організації з курсорною пагінацією.
+В.6.1.1 Відповідь (200)
+{
+"data": [
+{
+"id": "01234567-89ab-7cde-8901-234567890abc",
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z",
+"deadlineAt": "2024-06-01T00:00:00Z",
+"name": "Моя наукова стаття",
+"description": "Комплексне дослідження",
+"status": "draft",
+"publicationType": "article",
+"language": "uk",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc"
+}
+],
+"meta": {
+"nextCursor":
+"eyJpZCI6IjAxMjM0NTY3LTg5YWItN2NkZS04OTAxLTIzNDU2Nzg5MGFiYyJ9",
+"hasMore": true
+}
+}
+
+В.6.1.2 Помилкові відповіді
+–
+
+400 - Некоректні параметри
+
+–
+
+401 - Користувач не автентифікований
+
+48
+–
+
+403 - Користувач не авторизований
+
+–
+
+404 - Організацію не знайдено
+
+В.6.1.3 Приклад
+curl -X GET "http://localhost:8080/api/organizations/01234567-89ab-7
+cde-8901-234567890abc/manuscripts?limit=10" \
+-H "Authorization: Bearer <token>"
+curl -X GET "http://localhost:8080/api/organizations/01234567-89ab-7
+cde-8901-234567890abc/manuscripts?limit=10&cursor=eyJpZCI6..." \
+-H "Authorization: Bearer <token>"
+
+В.6.2 GET /api/organizations/{id}/tags
+Отримання тегів організації з курсорною пагінацією.
+В.6.2.1 Відповідь (200)
+{
+"data": [
+{
+"id": "01234567-89ab-7cde-8901-234567890abc",
+"createdAt": "2024-01-15T10:30:00Z",
+"name": "Наука",
+"color": "#FF5733",
+"organizationId": "01234567-89ab-7cde-8901-234567890abc"
+}
+],
+"meta": {
+"nextCursor": null,
+"hasMore": false
+}
+}
+
+В.6.2.2 Помилкові відповіді
+–
+
+400 - Некоректні параметри
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не авторизований
+
+–
+
+404 - Організацію не знайдено
+
+В.6.2.3 Приклад
+curl -X GET "http://localhost:8080/api/organizations/01234567-89ab-7
+cde-8901-234567890abc/tags?limit=50" \
+-H "Authorization: Bearer <token>"
+
+49
+В.7 Коментарі
+В.7.1 GET /api/manuscripts/{id}/comments
+Отримання коментарів до рукопису з курсорною пагінацією та вкладеними
+відповідями.
+В.7.1.1 Відповідь (200)
+{
+"data": [
+{
+"id": "01234567-89ab-7cde-8901-234567890abc",
+"text": "Це коментар",
+"createdAt": "2024-01-15T10:30:00Z",
+"updatedAt": "2024-01-15T10:30:00Z",
+"authorId": "01234567-89ab-7cde-8901-234567890def",
+"manuscriptId": "01234567-89ab-7cde-8901-234567890abc",
+"parentId": null,
+"replies": []
+}
+],
+"meta": {
+"nextCursor": null,
+"hasMore": false
+}
+}
+
+В.7.1.2 Помилкові відповіді
+–
+
+400 - Некоректні параметри
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не авторизований
+
+–
+
+404 - Рукопис не знайдено
+
+В.7.1.3 Приклад
+curl -X GET "http://localhost:8080/api/manuscripts/01234567-89ab-7
+cde-8901-234567890abc/comments?limit=20" \
+-H "Authorization: Bearer <token>"
+
+В.7.2 POST /api/manuscripts/{id}/comments
+Створення нового коментаря верхнього рівня до рукопису.
+
+50
+В.7.2.1 Тіло запиту
+{
+"text": "Це мій коментар до рукопису."
+}
+
+В.7.2.2 Відповідь (201)
+Повертає створений об’єкт коментаря.
+В.7.2.3 Помилкові відповіді
+–
+
+400 - Некоректне тіло запиту
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не авторизований
+
+–
+
+404 - Рукопис не знайдено
+
+–
+
+500 - Не вдалося створити коментар
+
+В.7.2.4 Приклад
+curl -X POST http://localhost:8080/api/manuscripts/01234567-89ab-7
+cde-8901-234567890abc/comments \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"text": "Чудова робота над розділом 3! Варто додати більше
+посилань."
+}'
+
+В.7.3 GET /api/comments/{id}
+Отримання окремого коментаря з вкладеними відповідями.
+В.7.3.1 Відповідь (200)
+Повертає об’єкт коментаря з вкладеними відповідями.
+В.7.3.2 Помилкові відповіді
+–
+
+400 - Некоректний параметр ID
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не авторизований
+
+51
+–
+
+404 - Коментар не знайдено
+
+В.7.3.3 Приклад
+curl -X GET http://localhost:8080/api/comments/01234567-89ab-7cde8901-234567890abc \
+-H "Authorization: Bearer <token>"
+
+В.7.4 PUT /api/comments/{id}
+Оновлення тексту коментаря (тільки автор).
+В.7.4.1 Тіло запиту
+{
+"text": "Оновлений текст коментаря."
+}
+
+В.7.4.2 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.7.4.3 Помилкові відповіді
+–
+
+400 - Некоректний запит
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не є автором коментаря
+
+–
+
+404 - Коментар не знайдено
+
+–
+
+500 - Не вдалося оновити коментар
+
+В.7.4.4 Приклад
+curl -X PUT http://localhost:8080/api/comments/01234567-89ab-7cde8901-234567890abc \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"text": "Я оновив свій попередній коментар."
+}'
+
+В.7.5 DELETE /api/comments/{id}
+Видалення коментаря (тільки автор або адміністратор).
+
+52
+В.7.5.1 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.7.5.2 Помилкові відповіді
+–
+
+400 - Некоректний параметр ID
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має права видаляти
+
+–
+
+404 - Коментар не знайдено
+
+В.7.5.3 Приклад
+curl -X DELETE http://localhost:8080/api/comments/01234567-89ab-7cde8901-234567890abc \
+-H "Authorization: Bearer <token>"
+
+В.7.6 POST /api/manuscripts/{manuscriptId}/comments/{commentId}/reply
+Створення відповіді на існуючий коментар.
+В.7.6.1 Тіло запиту
+{
+"text": "Це відповідь на коментар."
+}
+
+В.7.6.2 Відповідь (201)
+Повертає створений об’єкт коментаря-відповіді.
+В.7.6.3 Помилкові відповіді
+–
+
+400 - Некоректне тіло запиту
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не авторизований
+
+–
+
+404 - Рукопис або коментар не знайдено
+
+–
+
+500 - Не вдалося створити відповідь
+
+53
+В.7.6.4 Приклад
+curl -X POST http://localhost:8080/api/manuscripts/01234567-89ab-7
+cde-8901-234567890abc/comments/01234567-89ab-7cde-8901-234567890def/
+reply \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"text": "Погоджуюсь з вашою пропозицією!"
+}'
+
+В.8 Етапи публікації
+В.8.1 GET /api/manuscripts/{id}/publishing-stages
+Отримання етапів публікації рукопису з курсорною пагінацією.
+В.8.1.1 Відповідь (200)
+{
+"data": [
+{
+"id": "01234567-89ab-7cde-8901-234567890abc",
+"name": "Рецензування",
+"description": "Експертна перевірка рукопису",
+"startedAt": "2024-01-15T10:30:00Z",
+"finishedAt": null,
+"deadlineAt": "2024-02-15T23:59:59Z",
+"completedBy": null,
+"createdBy": "01234567-89ab-7cde-8901-234567890def",
+"manuscriptId": "01234567-89ab-7cde-8901-234567890abc"
+}
+],
+"meta": {
+"nextCursor": null,
+"hasMore": false
+}
+}
+
+В.8.1.2 Помилкові відповіді
+–
+
+400 - Некоректні параметри
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не авторизований
+
+–
+
+404 - Рукопис не знайдено
+
+54
+В.8.1.3 Приклад
+curl -X GET "http://localhost:8080/api/manuscripts/01234567-89ab-7
+cde-8901-234567890abc/publishing-stages" \
+-H "Authorization: Bearer <token>"
+
+В.8.2 POST /api/manuscripts/{id}/publishing-stages
+Створення нового етапу публікації для рукопису.
+В.8.2.1 Тіло запиту
+{
+"name": "Редагування тексту",
+"description": "Етап професійного редагування",
+"deadlineAt": "2024-03-01T23:59:59Z"
+}
+
+В.8.2.2 Відповідь (201)
+Повертає створений об’єкт етапу публікації.
+В.8.2.3 Помилкові відповіді
+–
+
+400 - Некоректне тіло запиту
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не авторизований
+
+–
+
+404 - Рукопис не знайдено
+
+–
+
+500 - Не вдалося створити етап публікації
+
+В.8.2.4 Приклад
+curl -X POST http://localhost:8080/api/manuscripts/01234567-89ab-7
+cde-8901-234567890abc/publishing-stages \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"name": "Фінальна перевірка",
+"description": "Остаточна перевірка перед публікацією",
+"deadlineAt": "2024-05-01T23:59:59Z"
+}'
+
+В.8.3 GET /api/publishing-stages/{id}
+Отримання окремого етапу публікації.
+
+55
+В.8.3.1 Відповідь (200)
+Повертає об’єкт етапу публікації.
+В.8.3.2 Помилкові відповіді
+–
+
+400 - Некоректний параметр ID
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не авторизований
+
+–
+
+404 - Етап публікації не знайдено
+
+В.8.3.3 Приклад
+curl -X GET http://localhost:8080/api/publishing-stages/01234567-89
+ab-7cde-8901-234567890abc \
+-H "Authorization: Bearer <token>"
+
+В.8.4 PUT /api/publishing-stages/{id}
+Оновлення деталей етапу публікації (тільки творець або адміністратор).
+В.8.4.1 Тіло запиту
+Усі поля є необов’язковими.
+{
+"name": "Оновлена назва етапу",
+"description": "Оновлений опис",
+"deadlineAt": "2024-04-01T23:59:59Z",
+"finishedAt": "2024-03-15T14:30:00Z"
+}
+
+В.8.4.2 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.8.4.3 Помилкові відповіді
+–
+
+400 - Некоректний запит
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не є творцем етапу
+
+–
+
+404 - Етап публікації не знайдено
+
+56
+–
+
+500 - Не вдалося оновити етап публікації
+
+В.8.4.4 Приклад
+curl -X PUT http://localhost:8080/api/publishing-stages/01234567-89
+ab-7cde-8901-234567890abc \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <token>" \
+-d '{
+"finishedAt": "2024-03-15T14:30:00Z"
+}'
+
+В.8.5 DELETE /api/publishing-stages/{id}
+Видалення етапу публікації (тільки творець або адміністратор).
+В.8.5.1 Відповідь (204)
+Успішна відповідь не містить вмісту.
+В.8.5.2 Помилкові відповіді
+–
+
+400 - Некоректний параметр ID
+
+–
+
+401 - Користувач не автентифікований
+
+–
+
+403 - Користувач не має права видаляти
+
+–
+
+404 - Етап публікації не знайдено
+
+В.8.5.3 Приклад
+curl -X DELETE http://localhost:8080/api/publishing-stages/0123456789ab-7cde-8901-234567890abc \
+-H "Authorization: Bearer <token>"
+
+В.9 Формат помилкових відповідей
+Усі помилкові відповіді мають однаковий формат:
+В.9.1 Помилка валідації (400)
+{
+"error": "Bad Request",
+"status": 400,
+"message": "Помилка валідації запиту",
+"details": {
+"issues": [
+
+57
+{
+"code": "too_small",
+"minimum": 5,
+"type": "string",
+"inclusive": true,
+"exact": false,
+"message": "Рядок повинен містити щонайменше 5 символів",
+"path": ["name"]
+}
+],
+"method": "POST",
+"url": "/api/manuscripts"
+}
+}
+
+В.9.2 Помилка автентифікації (401)
+{
+"status": 401,
+"error": "Unauthorized",
+"message": "Користувач не автентифікований"
+}
+
+В.9.3 Помилка авторизації (403)
+{
+"status": 403,
+"error": "Forbidden",
+"message": "Користувач не має права виконувати цю дію"
+}
+
+В.9.4 Помилка «не знайдено» (404)
+{
+"status": 404,
+"error": "Not Found",
+"message": "Ресурс не знайдено"
+}
+
+В.9.5 Помилка конфлікту (409)
+{
+"status": 409,
+"error": "Conflict",
+"message": "Ресурс з такою назвою вже існує"
+}
+
+В.9.6 Помилка сервера (500)
+{
+"status": 500,
+"error": "Internal Server Error",
+
+58
+"message": "Виникла непередбачена помилка"
+}
+
+
