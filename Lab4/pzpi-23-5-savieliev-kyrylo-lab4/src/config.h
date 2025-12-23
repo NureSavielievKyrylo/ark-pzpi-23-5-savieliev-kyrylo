@@ -1,0 +1,25 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#define FETCH_INTERVAL_MS 300000
+#define DISPLAY_UPDATE_MS 100
+
+#define LED_PIN 5
+#define LED_COUNT 3
+
+#define BUZZER_PIN 25
+
+#define OLED_SDA 21
+#define OLED_SCL 22
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+#define OLED_ADDRESS 0x3C
+
+#define MAX_MANUSCRIPTS 20
+#define NUM_SIMULATIONS 1000
+
+#define CRITICAL_THRESHOLD 0.3f
+#define HIGH_RISK_THRESHOLD 0.5f
+#define MEDIUM_RISK_THRESHOLD 0.7f
+
+#endif

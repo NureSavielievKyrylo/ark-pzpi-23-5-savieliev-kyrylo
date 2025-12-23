@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "author": "Inkly IoT",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-esp32-devkit-v1",
+      "id": "esp",
+      "top": 0,
+      "left": 86.67,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-neopixel",
+      "id": "rgb1",
+      "top": -86.4,
+      "left": 259.2,
+      "attrs": { "pixels": "3" }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "buzzer",
+      "top": -67.2,
+      "left": 355.2,
+      "attrs": {}
+    },
+    {
+      "type": "board-ssd1306",
+      "id": "oled",
+      "top": 76.8,
+      "left": -115.2,
+      "attrs": { "i2cAddress": "0x3c" }
+    }
+  ],
+  "connections": [
+    ["esp:TX", "$serialMonitor:RX", "", []],
+    ["esp:RX", "$serialMonitor:TX", "", []],
+    ["esp:D5", "rgb1:DIN", "green", ["h0"]],
+    ["esp:GND.1", "rgb1:GND", "black", ["h0"]],
+    ["esp:3V3", "rgb1:VCC", "red", ["h0"]],
+    ["esp:D25", "buzzer:1", "purple", ["h0"]],
+    ["esp:GND.2", "buzzer:2", "black", ["h0"]],
+    ["esp:D21", "oled:SDA", "blue", ["h0"]],
+    ["esp:D22", "oled:SCL", "yellow", ["h0"]],
+    ["esp:GND.3", "oled:GND", "black", ["h0"]],
+    ["esp:3V3", "oled:VCC", "red", ["h0"]]
+  ],
+  "dependencies": {}
+}

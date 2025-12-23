@@ -1,0 +1,189 @@
+МІНІСТЕРСТВО ОСВІТИ І НАУКИ УКРАЇНИ
+ХАРКІВСЬКИЙ НАЦІОНАЛЬНИЙ УНІВЕРСИТЕТ РАДІОЕЛЕКТРОНІКИ
+
+Кафедра Програмної інженерії
+
+Звіт
+з лабораторної роботи №4
+з дисципліни: «Аналіз та рефакторинг коду»
+з теми: «Створення IоT клієнта»
+
+Виконав:
+
+Перевірив:
+
+ст. гр. ПЗПІ-23-5
+
+cт. викладач кафедри ПІ
+
+Савєльєв К. С.
+
+Сокорчук І. П.
+
+Харків – 2025
+
+2
+1 ІСТОРІЯ ЗМІН
+№ Дата
+1 19.12.2025
+
+Версія звіту
+1.0
+
+Опис змін та виправлень
+Початкова версія
+
+3
+2 ЗАВДАННЯ
+–
+
+Розробити будову програмного забезпечення IoT клієнта;
+
+–
+
+Створити UML діаграму прецедентів для IoT клієнта;
+
+–
+
+Розробити бізнес логіку та функції налаштування IoT клієнта;
+
+–
+
+Створити UML діаграму діяльності для IoT клієнта;
+
+–
+
+Створити програмну реалізацію бізнес логіки та функцій налаштування
+IoT клієнта;
+
+–
+
+Перевірити роботу IoT клієнта;
+
+–
+
+Завантажити або оновити створений програмний код у GitHub
+репозиторій.
+
+4
+3 ОПИС ВИКОНАНОЇ РОБОТИ
+Під час виконання лабораторної роботи було розроблено IoT клієнт «Вежа
+дедлайнів».
+Цей клієнт дозволяє відстежувати статуси рукописів та прогнозувати їх
+завершення за допомогою різних методів аналізу даних, таких як матриця переходів
+Маркова, виявлення аномалій активності, баєсівське передбачення та симуляція
+Монте-Карло.
+Приклад розрахунку баєсівського передбачення дедлайнів:
+DeadlinePrediction BayesianPredictor::predict(
+const ManuscriptData &manuscript,
+float priorMeanDuration,
+float priorStdDev)
+{
+DeadlinePrediction result;
+strncpy(result.manuscriptId, manuscript.id,
+sizeof(result.manuscriptId) - 1);
+result.manuscriptId[sizeof(result.manuscriptId) - 1] = '\0';
+strncpy(result.manuscriptName, manuscript.name,
+sizeof(result.manuscriptName) - 1);
+result.manuscriptName[sizeof(result.manuscriptName) - 1] = '\0';
+int remainingStages = manuscript.totalStages manuscript.completedStages;
+float expectedRemainingDays = estimateRemainingDays(manuscript,
+priorMeanDuration);
+result.expectedDaysRemaining = expectedRemainingDays;
+if (strlen(manuscript.deadlineAt) == 0)
+{
+result.probabilityOnTime = 1.0f;
+result.riskLevel = RISK_LOW;
+return result;
+}
+float daysUntilDeadline =
+Analytics::daysUntilDeadline(manuscript.deadlineAt);
+if (daysUntilDeadline < 0)
+{
+result.probabilityOnTime = 0.0f;
+result.riskLevel = RISK_CRITICAL;
+return result;
+}
+if (remainingStages <= 0)
+{
+result.probabilityOnTime = 1.0f;
+result.riskLevel = RISK_LOW;
+return result;
+
+5
+}
+float completionRate = (float)manuscript.completedStages /
+(float)manuscript.totalStages;
+float posteriorMean = calculatePosteriorMean(
+manuscript.completedStages,
+manuscript.totalStages);
+float bufferRatio = daysUntilDeadline /
+fmaxf(expectedRemainingDays, 0.1f);
+float timeBasedProb = 1.0f / (1.0f + expf(-2.0f * (bufferRatio 1.0f)));
+result.probabilityOnTime = 0.6f * timeBasedProb + 0.4f *
+posteriorMean;
+result.probabilityOnTime = fmaxf(0.0f, fminf(1.0f,
+result.probabilityOnTime));
+result.riskLevel = determineRiskLevel(result.probabilityOnTime,
+bufferRatio);
+return result;
+}
+
+6
+4 ВИСНОВКИ
+У ході виконання лабораторної роботи було розроблено IoT клієнт «Вежа
+дедлайнів», який дозволяє відстежувати статуси рукописів та прогнозувати їх
+завершення. Було створено UML діаграми прецедентів та діяльності (див. рис. Б.1Б.2), що відображають функціональні можливості клієнта.
+Програмна реалізація бізнес логіки та функцій налаштування була успішно
+виконана, і робота клієнта була перевірена на коректність. Розроблений IoT клієнт
+може бути використаний для ефективного управління рукописами
+
+7
+5 ВИКОРИСТАНІ ДЖЕРЕЛА
+а)
+
+IoT for all | home. IoT For All | Home. URL: https://www.iotforall.com/ (дата
+звернення: 19.12.2025).
+
+б)
+
+About the unified modeling language specification version 2.5. Object
+Management Group. URL: https://www.omg.org/spec/UML/2.5/ (дата
+звернення: 19.12.2025).
+
+в)
+
+Unified modeling language (UML) description, UML diagram examples,
+tutorials and reference for all types of UML diagrams - use case diagrams,
+class, package, component, composite structure diagrams, deployments,
+activities, interactions, profiles, etc. Unified Modeling Language (UML)
+description, UML diagram examples, tutorials and reference for all types of
+UML diagrams - use case diagrams, class, package, component, composite
+structure diagrams, deployments, activities, interactions, profiles, etc. URL:
+https://www.uml-diagrams.org/ (дата звернення: 19.12.2025).
+
+8
+ДОДАТОК А
+Відеозапис
+Відеозапис презентації результатів лабораторної роботи: https://youtu.be/WPHEvRPeJM8
+Хронологічний опис відеозапису:
+00:00 - Представлення
+00:35 - Демонстрація роботи пристрою
+02:30 - Огляд вхідного файлу main.cpp
+03:50 - Огляд аналітичного модуля
+05:00 - Огляд модуля відображення
+05:25 - Огляд модуля відображення
+05:25 - Огляд модуля відображення
+05:25 - Огляд модуля попереджень
+
+9
+ДОДАТОК Б
+Графічні матеріали
+
+Рисунок Б.1 – UML діаграма взаємодії
+
+10
+
+Рисунок Б.2 – UML діаграма діяльності
+
+

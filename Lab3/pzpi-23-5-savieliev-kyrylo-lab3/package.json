@@ -1,0 +1,100 @@
+{
+	"name": "inkly-backend",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "Inkly backend",
+	"scripts": {
+		"build": "tsc && resolve-tspaths",
+		"start": "node --run db:apply-migration && node --run start:prod",
+		"start:prod": "NODE_ENV=production node dist/index.js",
+		"start:dev": "node ./scripts/depsCheck.js && NODE_ENV=development tsx --env-file=.env src/index.ts",
+		"start:dev:watch": "NODE_ENV=development tsx --env-file=.env --watch src/index.ts",
+		"docker:start:dev": "docker compose up",
+		"docker:stop:dev": "docker compose down",
+		"infrastructure:start:dev": "docker compose up db redis db-gateway",
+		"infrastructure:stop:dev": "docker compose down",
+		"db:start:dev": "docker compose up db",
+		"db:stop:dev": "docker compose down",
+		"redis:start:dev": "docker compose up redis",
+		"redis:stop:dev": "docker compose down",
+		"db:generate-schema": "tsc -p tsconfig.drizzle.json",
+		"db:generate-migration": "NODE_ENV=development node --run db:generate-schema && npx drizzle-kit generate --config=./drizzle.config.ts",
+		"db:apply-migration": "NODE_ENV=development npx drizzle-kit migrate --config=./drizzle.config.ts",
+		"db:drop-migration": "NODE_ENV=development npx drizzle-kit drop --config=./drizzle.config.ts",
+		"copy:config": "cpy --rename=.env ./.env.example ./",
+		"lint": "eslint .",
+		"format": "prettier --write .",
+		"free-ports": "npx cross-port-killer 8080",
+		"prepare": "husky",
+		"typecheck": "tsc --noEmit"
+	},
+	"keywords": [
+		"fastify",
+		"backend",
+		"template",
+		"dependency injection",
+		"typescript",
+		"db",
+		"postgres",
+		"drizzle",
+		"docker"
+	],
+	"author": {
+		"name": "Kyrylo Savieliev",
+		"email": "k_savieliev@icloud.com"
+	},
+	"license": "MIT",
+	"engines": {
+		"node": ">=22.x.x"
+	},
+	"lint-staged": {
+		"**/*.{js,ts,tsx}": [
+			"eslint --fix"
+		],
+		"**/*": "prettier --write --ignore-unknown"
+	},
+	"devDependencies": {
+		"@commitlint/cli": "^19.8.1",
+		"@commitlint/config-conventional": "^19.8.1",
+		"@eslint/js": "^9.33.0",
+		"@types/node": "^24.2.1",
+		"cpy-cli": "^5.0.0",
+		"drizzle-kit": "^0.31.4",
+		"eslint": "^9.33.0",
+		"eslint-config-prettier": "^10.1.8",
+		"eslint-plugin-prettier": "^5.5.4",
+		"globals": "^16.3.0",
+		"husky": "^9.1.7",
+		"lint-staged": "^16.1.5",
+		"pino-pretty": "^13.1.1",
+		"prettier": "^3.6.2",
+		"resolve-tspaths": "^0.8.23",
+		"tsx": "^4.20.3",
+		"typescript": "5.9.2",
+		"typescript-eslint": "^8.39.0"
+	},
+	"packageManager": "pnpm@9.12.3",
+	"dependencies": {
+		"@aws-sdk/client-s3": "^3.956.0",
+		"@aws-sdk/lib-storage": "^3.956.0",
+		"@fastify/awilix": "^8.0.0",
+		"@fastify/cookie": "^11.0.2",
+		"@fastify/cors": "^11.0.0",
+		"@fastify/helmet": "^13.0.1",
+		"@fastify/multipart": "^9.3.0",
+		"@fastify/rate-limit": "^10.3.0",
+		"@fastify/swagger": "^9.5.1",
+		"@node-rs/argon2": "^2.0.2",
+		"@scalar/fastify-api-reference": "^1.34.2",
+		"awilix": "^12.0.5",
+		"better-auth": "^1.4.6",
+		"drizzle-orm": "^0.44.4",
+		"drizzle-query-logger": "^1.0.7",
+		"fastify": "^5.4.0",
+		"fastify-type-provider-zod": "^5.0.3",
+		"ioredis": "^5.6.1",
+		"postgres": "^3.4.7",
+		"ts-results-es": "^6.0.0",
+		"zod": "^4.0.15"
+	}
+}
